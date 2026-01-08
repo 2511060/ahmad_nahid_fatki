@@ -1,3 +1,14 @@
+// script.js - with optional Firebase Auth / Firestore integration (2026-01-08)
+// Perubahan utama:
+// - Jika Firebase dikonfigurasi (window.firebaseAuth & window.firebaseDb), maka:
+//   * performRegister / performLogin menggunakan Firebase Auth (email dibuat dari username).
+//   * role disimpan & diambil dari Firestore collection 'users' (dokumen ID = username).
+//   * Admin UI mengambil daftar users dari Firestore.
+// - Fallback: jika Firebase tidak tersedia, behavior lama (localStorage 'users') tetap bekerja.
+// - Beberapa fungsi dibuat async untuk menunggu Firestore bila perlu.
+// - WARNING: pengaturan roles via client-side Firestore adalah TIDAK AMAN untuk produksi.
+//   Untuk produksi, gunakan Cloud Functions + Custom Claims untuk manajemen role yang aman.
+
 const initialProducts = [
     { id:1, name:"Tabung Gas 12kg", price:230000, stock:5, image:"https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQwpflIgpcCt9uD1vQwpcXlwmsB7H9FI9Bjeg&s", description:"Tabung gas 12kg, cocok untuk kebutuhan rumah tangga besar dan usaha kecil." },
     { id:2, name:"Tabung Gas 5kg",  price:120000, stock:10, image:"https://down-id.img.susercontent.com/file/2631ae627a23030df44d74464dedba0a", description:"Tabung gas 5kg, praktis untuk rumah tangga kecil atau portable." },
