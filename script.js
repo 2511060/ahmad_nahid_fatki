@@ -1,28 +1,13 @@
-// script.js - safe patch (2026-01-07)
-// Perubahan utama:
-// - Menghapus backdoor admin dan auto-creation akun admin.
-// - Menjaga kompatibilitas legacy password (btoa) dan migrasi ke SHA-256 (base64) saat login/register.
-// - Mengurangi penggunaan innerHTML di area sensitif untuk mencegah XSS (produk, detail, admin users, cart, orders).
-// - Validasi harga/stok diperbaiki (mengizinkan harga = 0, menolak negatif/NaN).
-// - Penanganan Cloudinary: cek konfigurasi sebelum upload dan pesan instruktif jika belum diset.
-// - Penambahan fitur pembayaran (client-side / simulasi): metode pembayaran, instruksi, paymentRef, status pembayaran, konfirmasi pembayaran.
-// - Penambahan fitur upload bukti pembayaran (upload ke Cloudinary jika tersedia, fallback dataURL) + admin approve/reject.
-
-// ---------------- initial data ----------------
 const initialProducts = [
     { id:1, name:"Tabung Gas 12kg", price:230000, stock:5, image:"https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQwpflIgpcCt9uD1vQwpcXlwmsB7H9FI9Bjeg&s", description:"Tabung gas 12kg, cocok untuk kebutuhan rumah tangga besar dan usaha kecil." },
     { id:2, name:"Tabung Gas 5kg",  price:120000, stock:10, image:"https://down-id.img.susercontent.com/file/2631ae627a23030df44d74464dedba0a", description:"Tabung gas 5kg, praktis untuk rumah tangga kecil atau portable." },
     { id:3, name:"Tabung Gas 3kg",  price:80000,  stock:15, image:"https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcR2qUf0OG8Lp4hkEg9v9zkQ6xhxWDEnhQA9Vg&s", description:"Tabung gas 3kg, ringan dan mudah dibawa." }
 ];
 
-// ---------------- Cloudinary configuration (fill these) ----------------
-// Ganti nilai di bawah dengan nilai dari dashboard Cloudinary Anda.
-// Untuk upload unsigned (tidak direkomendasikan untuk produksi) gunakan preset unsigned.
-// Untuk produksi, gunakan signed upload lewat server.
+// Cloudinary (tetap seperti sebelumnya)
 const CLOUDINARY_CLOUD_NAME = "drqzdt0r9";
 const CLOUDINARY_UPLOAD_PRESET = "unsigned_products";
 
-// Upload helper untuk Cloudinary (unsigned)
 async function uploadToCloudinary(file) {
   if (!file) return null;
   if (!CLOUDINARY_CLOUD_NAME || !CLOUDINARY_UPLOAD_PRESET) {
@@ -41,16 +26,6 @@ async function uploadToCloudinary(file) {
   return data.secure_url;
 }
 
-// Fallback: baca file jadi dataURL (untuk demo jika Cloudinary tidak dikonfigurasi)
-function fileToDataURL(file){
-  return new Promise((resolve, reject) => {
-    const fr = new FileReader();
-    fr.onload = () => resolve(fr.result);
-    fr.onerror = (e) => reject(e);
-    fr.readAsDataURL(file);
-  });
-}
-
 // ---------------- storage helpers ----------------
 function getProductsFromStorage(){
   try { return JSON.parse(localStorage.getItem('products') || 'null') || null; } catch(e){ return null; }
@@ -58,9 +33,8 @@ function getProductsFromStorage(){
 function saveProductsToStorage(arr){ localStorage.setItem('products', JSON.stringify(arr)); }
 function seedProductsIfNeeded(){ if (!getProductsFromStorage()){ saveProductsToStorage(initialProducts); } }
 
-// ---- users storage and migration (NO auto admin/backdoor) ----
-// Support previous isAdmin boolean shape and migrate to { password, role }
-function getUsers(){
+// ---- legacy local users storage and migration (ke Firestore jika tersedia) ----
+function getUsersLocal(){
   const raw = localStorage.getItem('users');
   if (!raw) {
     const empty = {};
@@ -90,12 +64,10 @@ function getUsers(){
     return empty;
   }
 }
-function saveUsers(u){ localStorage.setItem('users', JSON.stringify(u)); }
+function saveUsersLocal(u){ localStorage.setItem('users', JSON.stringify(u)); }
 
-// Legacy (insecure) hashing kept for backward compatibility (btoa)
-function hash(pw){ try { return btoa(pw); } catch(e){ return pw; } } // demo only
-
-// New: async SHA-256 hash -> base64 (Web Crypto)
+// hashing (legacy & fallback)
+function hash(pw){ try { return btoa(pw); } catch(e){ return pw; } }
 function base64ArrayBuffer(arrayBuffer) {
   const bytes = new Uint8Array(arrayBuffer);
   let binary = '';
@@ -113,26 +85,71 @@ async function asyncHash(pw){
     const hashBuffer = await crypto.subtle.digest('SHA-256', data);
     return base64ArrayBuffer(hashBuffer);
   } catch(e){
-    // fallback ke legacy btoa if Web Crypto tidak tersedia
     return hash(pw);
   }
 }
 
 let currentUser = localStorage.getItem('currentUser') || null;
+let currentUserRole = null; // 'user' | 'manager' | 'admin' or null
 let cart = [];
 
-// cart load/save per user
+// cart per user (localStorage)
 function loadCartForUser(){ cart = []; if (!currentUser) return; try { cart = JSON.parse(localStorage.getItem(`cart_${currentUser}`) || '[]'); } catch(e){ cart = []; } }
 function saveCartForUser(){ if (!currentUser) return; localStorage.setItem(`cart_${currentUser}`, JSON.stringify(cart)); }
 
-// orders per user
+// orders per user stays local
 function getOrdersForUser(){ if (!currentUser) return []; try { return JSON.parse(localStorage.getItem(`orders_${currentUser}`) || '[]'); } catch(e){ return []; } }
-function saveOrdersForUser(arr){ if (!currentUser) return; localStorage.setItem(`orders_${currentUser}`, JSON.stringify(arr)); }
 function saveOrderForUser(order){ if (!currentUser) return; const arr = getOrdersForUser(); arr.unshift(order); localStorage.setItem(`orders_${currentUser}`, JSON.stringify(arr)); }
 
 // utils
 function escapeHtml(s){ if (!s) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 function showToast(msg, type='info'){ const t = document.getElementById('toast'); if(!t) return; t.textContent = msg; t.classList.add('show'); setTimeout(()=> t.classList.remove('show'), 3000); }
+
+// ---------------- Firebase helpers (optional) ----------------
+// Expect window.firebaseAuth and window.firebaseDb (set by firebase-config.js) if Firebase dikonfigurasi.
+function firebaseAvailable(){ return (window.firebaseAuth && window.firebaseDb); }
+
+// We will use username -> "fake email" mapping: username + "@local.toko"
+// NOTE: this is a convenience for a username-only UI; in production use real email addresses.
+function usernameToEmail(username){ return `${username}@local.toko`; }
+
+// fetch role doc from Firestore (if available)
+async function fetchRoleFromFirestore(username){
+  if (!firebaseAvailable()) return null;
+  try {
+    const doc = await window.firebaseDb.collection('users').doc(username).get();
+    if (doc.exists) {
+      const data = doc.data();
+      return data.role || 'user';
+    }
+    return null;
+  } catch(e){
+    console.error('fetchRoleFromFirestore error', e);
+    return null;
+  }
+}
+async function setRoleInFirestore(username, role){
+  if (!firebaseAvailable()) return false;
+  try {
+    await window.firebaseDb.collection('users').doc(username).set({ role }, { merge: true });
+    return true;
+  } catch(e){
+    console.error('setRoleInFirestore', e);
+    return false;
+  }
+}
+async function fetchAllUsersFromFirestore(){
+  if (!firebaseAvailable()) return {};
+  try {
+    const snap = await window.firebaseDb.collection('users').get();
+    const out = {};
+    snap.forEach(doc=> { out[doc.id] = { role: doc.data().role || 'user' }; });
+    return out;
+  } catch(e){
+    console.error('fetchAllUsersFromFirestore', e);
+    return {};
+  }
+}
 
 // ---------------- product management ----------------
 function getProducts(){ const p = getProductsFromStorage(); return p ? p : []; }
@@ -144,13 +161,26 @@ function updateProduct(product){ const prods = getProducts(); const idx = prods.
 function deleteProduct(id){ let prods = getProducts(); prods = prods.filter(p=>p.id!==Number(id)); saveProductsToStorage(prods); return true; }
 
 // ---------------- roles & permission helpers ----------------
-function getUserRole(username){
-  const users = getUsers();
+// Note: If Firebase digunakan, currentUserRole di-set saat login/logout.
+// getUserRole fallback to local storage if needed.
+function getUserRoleFromLocal(username){
+  const users = getUsersLocal();
   if (!users[username]) return null;
   return users[username].role || 'user';
 }
-function isAdminUser(){ if (!currentUser) return false; const users = getUsers(); return (users[currentUser] && users[currentUser].role === 'admin'); }
-function isManagerOrAdmin(){ if (!currentUser) return false; const users = getUsers(); const r = (users[currentUser] && users[currentUser].role) || 'user'; return r === 'admin' || r === 'manager'; }
+async function getUserRole(username){
+  if (!username) return null;
+  if (firebaseAvailable()){
+    const r = await fetchRoleFromFirestore(username);
+    if (r) return r;
+    // fallback to local if firestore tidak punya doc:
+    return getUserRoleFromLocal(username) || 'user';
+  } else {
+    return getUserRoleFromLocal(username);
+  }
+}
+function isAdminUser(){ return currentUser && currentUserRole === 'admin'; }
+function isManagerOrAdmin(){ return currentUser && (currentUserRole === 'admin' || currentUserRole === 'manager'); }
 function requireAdminAction(){ if (!isAdminUser()){ showToast('Akses ditolak: hanya admin', 'error'); return false; } return true; }
 function requireManagerOrAdmin(){ if (!isManagerOrAdmin()){ showToast('Akses ditolak: hanya admin/manager', 'error'); return false; } return true; }
 
@@ -159,7 +189,7 @@ function updateHeaderUI(){
   const userInfo = document.getElementById('user-info');
   const loginBtn = document.getElementById('login-btn');
   const registerLink = document.getElementById('register-link');
-  if (userInfo) userInfo.textContent = currentUser ? `👤 ${currentUser} (${getUserRole(currentUser)})` : '';
+  if (userInfo) userInfo.textContent = currentUser ? `👤 ${currentUser} (${currentUserRole||getUserRoleFromLocal(currentUser)||'user'})` : '';
   if (loginBtn){
     if (currentUser){
       loginBtn.textContent = 'Logout';
@@ -176,7 +206,6 @@ function updateHeaderUI(){
 
 // ---------------- render product list (index) ----------------
 function makeProductCard(p){
-  // safer DOM-building (hindari innerHTML)
   const available = getAvailableStock(p.id);
   const stockText = available > 0 ? `Stok: ${available}` : 'Kosong';
   const disabled = available <= 0;
@@ -258,7 +287,6 @@ function renderProductDetail(){
   const product = findProduct(id); if (!product){ el.innerHTML = `<div class="product-detail"><div style="padding:20px">Produk tidak ditemukan. <a href="index.html">Kembali</a></div></div>`; return; }
   const available = getAvailableStock(product.id);
 
-  // Build DOM instead of innerHTML
   el.innerHTML = '';
   const wrapper = document.createElement('div');
   wrapper.className = 'product-detail';
@@ -361,7 +389,7 @@ function decreaseCartQty(productId){ const item = cart.find(i=>i.id===productId)
 function increaseCartQty(productId){ const available = getAvailableStock(productId); const item = cart.find(i=>i.id===productId); if (!item) return; if (item.qty + 1 > available){ showToast('Stok tidak mencukupi', 'error'); return; } item.qty++; saveCartForUser(); updateCartUI(); }
 function removeFromCart(productId){ cart = cart.filter(i=>i.id!==productId); saveCartForUser(); updateCartUI(); }
 function emptyCart(){ cart = []; saveCartForUser(); updateCartUI(); showToast('Keranjang dikosongkan'); }
-function updateCartUI(){ const countEl = document.getElementById('cart-count'), list = document.getElementById('cart-items'), totalEl = document.getElementById('cart-total'); if (!countEl || !list || !totalEl) return; const totalQty = cart.reduce((s,i)=>s+(i.qty||0),0); countEl.textContent = totalQty; list.innerHTML = ''; let total = 0; cart.forEach(item=>{ total += item.price * (item.qty||0); const li = document.createElement('li'); // safer composition
+function updateCartUI(){ const countEl = document.getElementById('cart-count'), list = document.getElementById('cart-items'), totalEl = document.getElementById('cart-total'); if (!countEl || !list || !totalEl) return; const totalQty = cart.reduce((s,i)=>s+(i.qty||0),0); countEl.textContent = totalQty; list.innerHTML = ''; let total = 0; cart.forEach(item=>{ total += item.price * (item.qty||0); const li = document.createElement('li');
   const nameSpan = document.createElement('span');
   nameSpan.textContent = `${item.name} x ${item.qty}`;
   li.appendChild(nameSpan);
@@ -389,362 +417,22 @@ function updateCartUI(){ const countEl = document.getElementById('cart-count'), 
   list.appendChild(li);
   }); totalEl.textContent = 'Rp' + total.toLocaleString(); saveCartForUser(); }
 
-// ---------------- checkout & orders (dengan pembayaran sederhana) ----------------
+// ---------------- checkout & orders ----------------
 function proceedToCheckout(){ if (!currentUser){ localStorage.setItem('redirectAfterLogin','showCart'); window.location.href='login.html'; return; } if (!cart.length){ showToast('Keranjang kosong', 'error'); return; } window.location.href = 'checkout.html'; }
-function renderCheckoutItems(){ const el = document.getElementById('checkout-items'); if (!el) return; if (!currentUser){ window.location.href='login.html'; return; } el.innerHTML = ''; let subtotal = 0; cart.forEach(i=>{ subtotal += i.price * i.qty; const row = document.createElement('div'); row.textContent = `${i.name} x ${i.qty} — Rp${(i.price*i.qty).toLocaleString()}`; el.appendChild(row); }); const sub = document.createElement('div'); sub.style.marginTop = '8px'; sub.style.fontWeight = '700'; sub.id = 'checkout-subtotal'; sub.textContent = `Subtotal: Rp${subtotal.toLocaleString()}`; el.appendChild(sub);
+function renderCheckoutItems(){ const el = document.getElementById('checkout-items'); if (!el) return; if (!currentUser){ window.location.href='login.html'; return; } el.innerHTML = ''; let total = 0; cart.forEach(i=>{ total += i.price * i.qty; const row = document.createElement('div'); row.textContent = `${i.name} x ${i.qty} — Rp${(i.price*i.qty).toLocaleString()}`; el.appendChild(row); }); const sub = document.createElement('div'); sub.style.marginTop = '8px'; sub.style.fontWeight = '700'; sub.textContent = `Subtotal: Rp${total.toLocaleString()}`; el.appendChild(sub); }
+function placeOrder(){ if (!currentUser){ window.location.href='login.html'; return; } if (!cart.length){ showToast('Keranjang kosong', 'error'); return; } const name = document.getElementById('addr-name').value.trim(); const phone = document.getElementById('addr-phone').value.trim(); const addr = document.getElementById('addr-address').value.trim(); const ship = document.getElementById('shipping-method').value; if (!name || !phone || !addr){ showToast('Lengkapi alamat pengiriman', 'error'); return; } for (const it of cart){ const available = getAvailableStock(it.id); if (it.qty > available){ showToast(`Stok tidak cukup untuk ${it.name}. Tersedia ${available}`, 'error'); return; } } let subtotal = cart.reduce((s,i)=>s+(i.price*i.qty),0); const shipCost = ship === 'yes' ? 15000 : 0; const total = subtotal + shipCost; const now = new Date().toISOString(); const order = { id: 'ORD' + Date.now(), date: now, items: cart.map(i=>({id:i.id,name:i.name,price:i.price,qty:i.qty})), subtotal, shipMethod:ship, shipCost, total, address:{name,phone,addr} }; const prods = getProducts(); order.items.forEach(it=>{ const idx = prods.findIndex(p=>p.id===it.id); if (idx !== -1) prods[idx].stock = Math.max(0, (prods[idx].stock||0) - it.qty); }); saveProductsToStorage(prods); saveOrderForUser(order); cart = []; saveCartForUser(); showToast('Pesanan berhasil dibuat', 'success'); setTimeout(()=> window.location.href = 'orders.html', 900); }
 
-  // Show shipping & total preview (will be recalculated on payment selection/change)
-  const shipDiv = document.createElement('div'); shipDiv.id='checkout-shipping'; shipDiv.style.marginTop='6px'; el.appendChild(shipDiv);
-  const totDiv = document.createElement('div'); totDiv.id='checkout-total'; totDiv.style.marginTop='6px'; totDiv.style.fontWeight='800'; el.appendChild(totDiv);
-
-  // update totals based on shipping & payment selection
-  function updateTotals(){
-    const ship = document.getElementById('shipping-method') ? document.getElementById('shipping-method').value : 'reg';
-    const shipCost = ship === 'yes' ? 15000 : 0;
-    const total = subtotal + shipCost;
-    const shipEl = document.getElementById('checkout-shipping');
-    if (shipEl) shipEl.textContent = `Ongkir: Rp${shipCost.toLocaleString()}`;
-    const totEl = document.getElementById('checkout-total');
-    if (totEl) totEl.textContent = `Total: Rp${total.toLocaleString()}`;
-    // also update payment instruction preview
-    const pm = document.getElementById('payment-method') ? document.getElementById('payment-method').value : 'bank';
-    showPaymentPreview(pm, total);
-  }
-
-  const shipSel = document.getElementById('shipping-method'); if (shipSel) shipSel.addEventListener('change', updateTotals);
-  const paySel = document.getElementById('payment-method'); if (paySel) paySel.addEventListener('change', ()=> { updateTotals(); });
-
-  updateTotals();
-}
-function placeOrder(){ if (!currentUser){ window.location.href='login.html'; return; } if (!cart.length){ showToast('Keranjang kosong', 'error'); return; } const name = document.getElementById('addr-name').value.trim(); const phone = document.getElementById('addr-phone').value.trim(); const addr = document.getElementById('addr-address').value.trim(); const ship = document.getElementById('shipping-method').value; const payMethod = document.getElementById('payment-method') ? document.getElementById('payment-method').value : 'bank'; if (!name || !phone || !addr){ showToast('Lengkapi alamat pengiriman', 'error'); return; } for (const it of cart){ const available = getAvailableStock(it.id); if (it.qty > available){ showToast(`Stok tidak cukup untuk ${it.name}. Tersedia ${available}`, 'error'); return; } } let subtotal = cart.reduce((s,i)=>s+(i.price*i.qty),0); const shipCost = ship === 'yes' ? 15000 : 0; const total = subtotal + shipCost; const now = new Date().toISOString();
-
-  // prepare payment information (simulasi)
-  const payment = preparePaymentForOrder(payMethod, total);
-
-  const order = { id: 'ORD' + Date.now(), date: now, items: cart.map(i=>({id:i.id,name:i.name,price:i.price,qty:i.qty})), subtotal, shipMethod:ship, shipCost, total, address:{name,phone,addr}, paymentMethod: payMethod, paymentStatus: payment.status, paymentRef: payment.ref || '', paymentInstructions: payment.instructions || '', paymentProof: '', paymentProofStatus: '', paymentProofNote: '' };
-
-  // reduce stock
-  const prods = getProducts(); order.items.forEach(it=>{ const idx = prods.findIndex(p=>p.id===it.id); if (idx !== -1) prods[idx].stock = Math.max(0, (prods[idx].stock||0) - it.qty); }); saveProductsToStorage(prods);
-
-  // save order (per user)
-  saveOrderForUser(order);
-
-  // clear cart
-  cart = []; saveCartForUser();
-
-  // Show instruction or navigate
-  if (order.paymentStatus === 'pending'){
-    showToast('Pesanan dibuat. Periksa instruksi pembayaran di Riwayat Pesanan.', 'success');
-  } else if (order.paymentStatus === 'cod_pending'){
-    showToast('Pesanan dibuat (COD). Bayar saat pesanan diterima.', 'success');
-  } else if (order.paymentStatus === 'paid'){
-    showToast('Pesanan dibuat dan terbayar. Terima kasih!', 'success');
-  } else {
-    showToast('Pesanan dibuat', 'success');
-  }
-
-  setTimeout(()=> window.location.href = 'orders.html', 800);
-}
-
-// ---------------- payment helpers (simulasi) ----------------
-function rand(n){ return Math.floor(Math.random()*n); }
-function genPaymentRef(prefix='VA'){ return prefix + (Math.floor(Date.now()/1000) % 100000) + String(Math.floor(Math.random()*90000)+10000); }
-
-// prepare payment for order (client-side simulation)
-// returns { status: 'pending'|'paid'|'cod_pending', ref, instructions }
-function preparePaymentForOrder(method, total){
-  if (method === 'cod'){
-    return { status: 'cod_pending', ref: '', instructions: 'Bayar saat pesanan diterima (COD).' };
-  }
-  if (method === 'bank' || method === 'virtual'){
-    const ref = genPaymentRef('VA');
-    const instr = `Silakan transfer Rp${total.toLocaleString()} ke nomor Virtual Account: ${ref}. Setelah transfer, unggah bukti pembayaran atau klik "Konfirmasi Pembayaran" pada halaman Riwayat Pesanan. (Ini simulasi.)`;
-    return { status: 'pending', ref, instructions: instr };
-  }
-  if (method === 'qris'){
-    const ref = genPaymentRef('QR');
-    const instr = `Silakan scan QRIS (kode referensi ${ref}) dan bayar sebesar Rp${total.toLocaleString()}. Setelah bayar, unggah bukti pembayaran atau klik "Konfirmasi Pembayaran" pada halaman Riwayat Pesanan. (Ini simulasi.)`;
-    return { status: 'pending', ref, instructions: instr };
-  }
-  // default
-  return { status: 'pending', ref: '', instructions: 'Ikuti instruksi pembayaran.' };
-}
-
-// show payment preview on checkout page (informasional)
-function showPaymentPreview(method, total){
-  const el = document.getElementById('payment-instructions');
-  if (!el) return;
-  if (method === 'cod'){
-    el.textContent = 'Bayar dengan cash saat pesanan diterima (COD). Tidak perlu bayar sekarang.';
-    return;
-  }
-  if (method === 'bank' || method === 'virtual'){
-    const ref = genPaymentRef('VA'); // preview ref (not stored until order dibuat)
-    el.textContent = `Contoh instruksi: transfer Rp${total.toLocaleString()} ke Virtual Account ${ref}. (Ref contoh, akan digenerate saat pesanan dibuat.)`;
-    return;
-  }
-  if (method === 'qris'){
-    const ref = genPaymentRef('QR');
-    el.textContent = `Contoh instruksi QRIS: scan kode, bayar Rp${total.toLocaleString()}. Kode ref contoh: ${ref}.`;
-    return;
-  }
-  el.textContent = '';
-}
-
-// ---------------- orders page (dengan upload bukti pembayaran) ----------------
-function renderOrdersPage(){ if (!currentUser){ window.location.href='login.html'; return; } const wrap = document.getElementById('orders-list'); if (!wrap) return; const orders = getOrdersForUser(); if (!orders.length) { wrap.innerHTML = '<div>Tidak ada pesanan.</div>'; return; } wrap.innerHTML = ''; orders.forEach(o=>{ const div = document.createElement('div'); div.className = 'order-item'; const head = document.createElement('div'); head.style.display='flex'; head.style.justifyContent='space-between'; const strong = document.createElement('strong'); strong.textContent = o.id; const spanDate = document.createElement('span'); spanDate.textContent = new Date(o.date).toLocaleString(); head.appendChild(strong); head.appendChild(spanDate); div.appendChild(head); const itemsTitle = document.createElement('div'); itemsTitle.textContent = 'Items:'; div.appendChild(itemsTitle); const ul = document.createElement('ul'); o.items.forEach(it=>{ const li = document.createElement('li'); li.textContent = `${it.name} x ${it.qty} — Rp${(it.price*it.qty).toLocaleString()}`; ul.appendChild(li); }); div.appendChild(ul); const tot = document.createElement('div'); tot.textContent = `Total: Rp${o.total.toLocaleString()}`; div.appendChild(tot);
-
-  // payment info
-  const payDiv = document.createElement('div');
-  payDiv.style.marginTop = '8px';
-  const pm = document.createElement('div');
-  pm.textContent = `Metode Pembayaran: ${o.paymentMethod || 'N/A'}`;
-  payDiv.appendChild(pm);
-  const pst = document.createElement('div');
-  let pstText = o.paymentStatus || 'unknown';
-  if (pstText === 'pending') pstText = 'Menunggu pembayaran';
-  if (pstText === 'pending_confirmation') pstText = 'Menunggu konfirmasi bukti pembayaran';
-  if (pstText === 'cod_pending') pstText = 'Bayar saat diterima (COD)';
-  if (pstText === 'paid') pstText = 'Terbayar';
-  payDiv.appendChild(Object.assign(document.createElement('div'), { textContent: `Status Pembayaran: ${pstText}` }));
-
-  if (o.paymentRef) {
-    const pref = document.createElement('div');
-    pref.textContent = `Referensi: ${o.paymentRef}`;
-    pref.style.fontSize = '0.95em';
-    pref.style.color = '#333';
-    payDiv.appendChild(pref);
-  }
-  if (o.paymentInstructions){
-    const pinstr = document.createElement('div');
-    pinstr.textContent = o.paymentInstructions;
-    pinstr.style.fontSize = '0.95em';
-    pinstr.style.color = '#554';
-    pinstr.style.marginTop = '6px';
-    payDiv.appendChild(pinstr);
-  }
-  div.appendChild(payDiv);
-
-  // payment proof area
-  const proofDiv = document.createElement('div');
-  proofDiv.style.marginTop = '10px';
-  if (o.paymentProof){
-    const imgWrap = document.createElement('div');
-    imgWrap.style.display = 'flex';
-    imgWrap.style.gap = '8px';
-    imgWrap.style.alignItems = 'center';
-    const thumb = document.createElement('img');
-    thumb.src = o.paymentProof;
-    thumb.alt = 'Bukti pembayaran';
-    thumb.style.maxWidth = '140px';
-    thumb.style.maxHeight = '90px';
-    thumb.style.objectFit = 'cover';
-    thumb.style.borderRadius = '6px';
-    thumb.style.border = '1px solid #eef4f4';
-    imgWrap.appendChild(thumb);
-    const info = document.createElement('div');
-    info.style.fontSize = '0.95em';
-    info.style.color = '#333';
-    info.textContent = `Status bukti: ${o.paymentProofStatus || 'uploaded'}`;
-    imgWrap.appendChild(info);
-    proofDiv.appendChild(imgWrap);
-    // view full
-    const viewBtn = document.createElement('button');
-    viewBtn.textContent = 'Lihat Bukti';
-    viewBtn.style.marginTop = '8px';
-    viewBtn.addEventListener('click', ()=> window.open(o.paymentProof, '_blank'));
-    proofDiv.appendChild(viewBtn);
-  } else {
-    // show upload control only if order is pending payment or pending_confirmation
-    if (o.paymentStatus === 'pending' || o.paymentStatus === 'pending_confirmation'){
-      const fileInput = document.createElement('input');
-      fileInput.type = 'file';
-      fileInput.accept = 'image/*';
-      fileInput.id = `proof-file-${o.id}`;
-      fileInput.style.display = 'inline-block';
-      proofDiv.appendChild(fileInput);
-      const upBtn = document.createElement('button');
-      upBtn.textContent = 'Upload Bukti';
-      upBtn.style.marginLeft = '8px';
-      upBtn.addEventListener('click', ()=> uploadPaymentProof(o.id));
-      proofDiv.appendChild(upBtn);
-      const note = document.createElement('div');
-      note.style.fontSize = '0.9em';
-      note.style.color = '#556';
-      note.style.marginTop = '6px';
-      note.textContent = 'Unggah bukti transfer (gambar). Jika Cloudinary belum dikonfigurasi, file disimpan secara lokal (dataURL).';
-      proofDiv.appendChild(note);
-    }
-  }
-  if (o.paymentProofStatus === 'rejected'){
-    const rejNote = document.createElement('div');
-    rejNote.style.color = '#b02';
-    rejNote.style.marginTop = '6px';
-    rejNote.textContent = `Bukti ditolak: ${o.paymentProofNote || 'tidak ada catatan'}`;
-    proofDiv.appendChild(rejNote);
-  }
-  div.appendChild(proofDiv);
-
-  // address
-  const addrDiv = document.createElement('div');
-  addrDiv.textContent = `Alamat: ${o.address.name} — ${o.address.phone} — ${o.address.addr}`;
-  div.appendChild(addrDiv);
-
-  // actions: jika belum dibayar dan bukan COD, pengguna bisa konfirmasi bayar (simulasi)
-  const actions = document.createElement('div');
-  actions.style.marginTop = '8px';
-  actions.style.display = 'flex';
-  actions.style.gap = '8px';
-
-  if (o.paymentStatus === 'pending'){
-    const confBtn = document.createElement('button');
-    confBtn.className = 'btn-primary';
-    confBtn.textContent = 'Konfirmasi Pembayaran';
-    confBtn.addEventListener('click', ()=> confirmPayment(o.id));
-    actions.appendChild(confBtn);
-  }
-  if (o.paymentStatus === 'cod_pending'){
-    const codBtn = document.createElement('button');
-    codBtn.className = 'btn-primary';
-    codBtn.textContent = 'Tandai Lunas (COD)';
-    codBtn.addEventListener('click', ()=> confirmPayment(o.id));
-    actions.appendChild(codBtn);
-  }
-
-  // Admin quick toggle paid/unpaid (jika admin)
-  if (isAdminUser()){
-    if (o.paymentProof && o.paymentProofStatus === 'uploaded'){
-      const approveBtn = document.createElement('button');
-      approveBtn.className = 'btn-primary';
-      approveBtn.textContent = 'Approve Bukti';
-      approveBtn.addEventListener('click', ()=> adminApproveProof(o.id));
-      actions.appendChild(approveBtn);
-
-      const rejectBtn = document.createElement('button');
-      rejectBtn.className = 'btn-danger';
-      rejectBtn.textContent = 'Reject Bukti';
-      rejectBtn.addEventListener('click', ()=> {
-        const note = prompt('Alasan penolakan (opsional):') || '';
-        adminRejectProof(o.id, note);
-      });
-      actions.appendChild(rejectBtn);
-    } else {
-      const adminBtn = document.createElement('button');
-      adminBtn.className = 'btn-muted';
-      adminBtn.textContent = (o.paymentStatus === 'paid') ? 'Tandai Belum Lunas' : 'Tandai Lunas';
-      adminBtn.addEventListener('click', ()=> adminTogglePaid(o.id));
-      actions.appendChild(adminBtn);
-    }
-  }
-
-  div.appendChild(actions);
-
-  wrap.appendChild(div);
-  }); }
-
-// unggah bukti pembayaran untuk pesanan saat ini (user)
-async function uploadPaymentProof(orderId){
-  if (!currentUser) { window.location.href = 'login.html'; return; }
-  const orders = getOrdersForUser();
-  const idx = orders.findIndex(o=>o.id===orderId);
-  if (idx === -1) { showToast('Pesanan tidak ditemukan', 'error'); return; }
-  const input = document.getElementById(`proof-file-${orderId}`);
-  if (!input || !input.files || !input.files[0]) { showToast('Pilih file bukti terlebih dahulu', 'error'); return; }
-  const file = input.files[0];
-  try {
-    showToast('Mengunggah bukti...', 'info');
-    let url = '';
-    if (CLOUDINARY_CLOUD_NAME && CLOUDINARY_UPLOAD_PRESET){
-      url = await uploadToCloudinary(file);
-    } else {
-      // fallback to dataURL (demo)
-      url = await fileToDataURL(file);
-    }
-    orders[idx].paymentProof = url;
-    orders[idx].paymentProofStatus = 'uploaded';
-    orders[idx].paymentProofNote = '';
-    // set overall payment status to pending confirmation if currently pending
-    if (orders[idx].paymentStatus === 'pending') orders[idx].paymentStatus = 'pending_confirmation';
-    saveOrdersForUser(orders);
-    showToast('Bukti berhasil diunggah. Menunggu konfirmasi.', 'success');
-    renderOrdersPage();
-  } catch(err){
-    console.error(err);
-    showToast('Gagal mengunggah bukti: ' + (err.message || err), 'error');
-  }
-}
-
-// konfirmasi pembayaran oleh user (simulasi)
-function confirmPayment(orderId){
-  if (!currentUser) return;
-  const orders = getOrdersForUser();
-  const idx = orders.findIndex(o=>o.id===orderId);
-  if (idx === -1) return;
-  if (!confirm('Konfirmasi pembayaran untuk pesanan ini? (Simulasi: ini akan menandai pesanan sebagai terbayar)')) return;
-  orders[idx].paymentStatus = 'paid';
-  orders[idx].paymentProofStatus = orders[idx].paymentProofStatus || 'n/a';
-  orders[idx].paidAt = new Date().toISOString();
-  saveOrdersForUser(orders);
-  showToast('Pembayaran dikonfirmasi (simulasi). Terima kasih!', 'success');
-  renderOrdersPage();
-}
-
-// admin approve/reject proof
-function adminApproveProof(orderId){
-  if (!requireAdminAction()) return;
-  const orders = getOrdersForUser();
-  const idx = orders.findIndex(o=>o.id===orderId);
-  if (idx === -1) return;
-  if (!confirm('Setujui bukti pembayaran dan tandai pesanan sebagai LUNAS?')) return;
-  orders[idx].paymentStatus = 'paid';
-  orders[idx].paymentProofStatus = 'approved';
-  orders[idx].paidAt = new Date().toISOString();
-  saveOrdersForUser(orders);
-  showToast('Bukti disetujui, pesanan ditandai LUNAS', 'success');
-  renderOrdersPage();
-}
-function adminRejectProof(orderId, note){
-  if (!requireAdminAction()) return;
-  const orders = getOrdersForUser();
-  const idx = orders.findIndex(o=>o.id===orderId);
-  if (idx === -1) return;
-  if (!confirm('Tolak bukti pembayaran?')) return;
-  orders[idx].paymentProofStatus = 'rejected';
-  orders[idx].paymentProofNote = note || '';
-  orders[idx].paymentStatus = 'pending'; // kembali menunggu pembayaran
-  saveOrdersForUser(orders);
-  showToast('Bukti ditolak', 'info');
-  renderOrdersPage();
-}
-
-// admin toggle paid/unpaid (simulasi)
-function adminTogglePaid(orderId){
-  if (!requireAdminAction()) return;
-  const orders = getOrdersForUser();
-  const idx = orders.findIndex(o=>o.id===orderId);
-  if (idx === -1) return;
-  if (orders[idx].paymentStatus === 'paid'){
-    if (!confirm('Batalkan tanda lunas untuk pesanan ini?')) return;
-    orders[idx].paymentStatus = 'pending';
-    delete orders[idx].paidAt;
-  } else {
-    if (!confirm('Tandai pesanan ini sebagai sudah dibayar?')) return;
-    orders[idx].paymentStatus = 'paid';
-    orders[idx].paidAt = new Date().toISOString();
-  }
-  saveOrdersForUser(orders);
-  showToast('Status pembayaran diperbarui', 'success');
-  renderOrdersPage();
-}
+// ---------------- orders page ----------------
+function renderOrdersPage(){ if (!currentUser){ window.location.href='login.html'; return; } const wrap = document.getElementById('orders-list'); if (!wrap) return; const orders = getOrdersForUser(); if (!orders.length) { wrap.innerHTML = '<div>Tidak ada pesanan.</div>'; return; } wrap.innerHTML = ''; orders.forEach(o=>{ const div = document.createElement('div'); div.className = 'order-item'; const head = document.createElement('div'); head.style.display='flex'; head.style.justifyContent='space-between'; const strong = document.createElement('strong'); strong.textContent = o.id; const spanDate = document.createElement('span'); spanDate.textContent = new Date(o.date).toLocaleString(); head.appendChild(strong); head.appendChild(spanDate); div.appendChild(head); const itemsTitle = document.createElement('div'); itemsTitle.textContent = 'Items:'; div.appendChild(itemsTitle); const ul = document.createElement('ul'); o.items.forEach(it=>{ const li = document.createElement('li'); li.textContent = `${it.name} x ${it.qty} — Rp${(it.price*it.qty).toLocaleString()}`; ul.appendChild(li); }); div.appendChild(ul); const tot = document.createElement('div'); tot.textContent = `Total: Rp${o.total.toLocaleString()}`; div.appendChild(tot); const addrDiv = document.createElement('div'); addrDiv.textContent = `Alamat: ${o.address.name} — ${o.address.phone} — ${o.address.addr}`; div.appendChild(addrDiv); wrap.appendChild(div); }); }
 
 // ---------------- admin page (products & users) ----------------
-function renderAdminProducts(){ if (!isManagerOrAdmin()){ showToast('Akses ditolak: hanya admin/manager', 'error'); window.location.href='index.html'; return; } const wrap = document.getElementById('admin-products'); if (!wrap) return; wrap.innerHTML = ''; getProducts().forEach(p=>{ const el = document.createElement('div'); el.className = 'admin-product'; const img = document.createElement('img'); img.src = p.image; img.alt = p.name; el.appendChild(img); const info = document.createElement('div'); info.style.flex = '1'; const title = document.createElement('div'); title.style.fontWeight = '700'; title.textContent = p.name; info.appendChild(title); const meta = document.createElement('div'); meta.textContent = `Rp${p.price.toLocaleString()} — Stok: ${p.stock}`; info.appendChild(meta); const desc = document.createElement('div'); desc.style.fontSize = '0.9em'; desc.style.color = '#556'; desc.textContent = p.description; info.appendChild(desc); el.appendChild(info); const actions = document.createElement('div'); actions.style.display='flex'; actions.style.flexDirection='column'; actions.style.gap='6px'; const editBtn = document.createElement('button'); editBtn.className='btn-primary'; editBtn.textContent='Edit'; editBtn.addEventListener('click', ()=> editProduct(p.id)); actions.appendChild(editBtn); const delBtn = document.createElement('button'); delBtn.className='btn-danger'; delBtn.textContent='Hapus'; delBtn.addEventListener('click', ()=> removeProduct(p.id)); actions.appendChild(delBtn); el.appendChild(actions); wrap.appendChild(el); }); }
+async function renderAdminProducts(){ if (!isManagerOrAdmin()){ showToast('Akses ditolak: hanya admin/manager', 'error'); window.location.href='index.html'; return; } const wrap = document.getElementById('admin-products'); if (!wrap) return; wrap.innerHTML = ''; getProducts().forEach(p=>{ const el = document.createElement('div'); el.className = 'admin-product'; const img = document.createElement('img'); img.src = p.image; img.alt = p.name; el.appendChild(img); const info = document.createElement('div'); info.style.flex = '1'; const title = document.createElement('div'); title.style.fontWeight = '700'; title.textContent = p.name; info.appendChild(title); const meta = document.createElement('div'); meta.textContent = `Rp${p.price.toLocaleString()} — Stok: ${p.stock}`; info.appendChild(meta); const desc = document.createElement('div'); desc.style.fontSize = '0.9em'; desc.style.color = '#556'; desc.textContent = p.description; info.appendChild(desc); el.appendChild(info); const actions = document.createElement('div'); actions.style.display='flex'; actions.style.flexDirection='column'; actions.style.gap='6px'; const editBtn = document.createElement('button'); editBtn.className='btn-primary'; editBtn.textContent='Edit'; editBtn.addEventListener('click', ()=> editProduct(p.id)); actions.appendChild(editBtn); const delBtn = document.createElement('button'); delBtn.className='btn-danger'; delBtn.textContent='Hapus'; delBtn.addEventListener('click', ()=> removeProduct(p.id)); actions.appendChild(delBtn); el.appendChild(actions); wrap.appendChild(el); }); }
 
 function resetProductForm(){ document.getElementById('p-id').value = ''; document.getElementById('p-name').value = ''; document.getElementById('p-price').value = ''; document.getElementById('p-stock').value = ''; document.getElementById('p-desc').value = ''; document.getElementById('p-image-file').value = ''; document.getElementById('p-image-url').value = ''; }
 function editProduct(id){ if (!isManagerOrAdmin()){ showToast('Akses ditolak', 'error'); return; } const p = findProduct(id); if (!p) return; document.getElementById('p-id').value = p.id; document.getElementById('p-name').value = p.name; document.getElementById('p-price').value = p.price; document.getElementById('p-stock').value = p.stock; document.getElementById('p-desc').value = p.description; document.getElementById('p-image-url').value = p.image; window.scrollTo({top:0,behavior:'smooth'}); }
 function removeProduct(id){ if (!requireManagerOrAdmin()) return; if (!confirm('Hapus produk ini?')) return; deleteProduct(id); renderAdminProducts(); renderProducts(); showToast('Produk dihapus', 'success'); }
 
-// ---------- saveProduct (MODIFIED: upload to Cloudinary if file provided) ----------
+// ---------- saveProduct (upload Cloudinary if file provided) ----------
 async function saveProduct(){
   if (!requireManagerOrAdmin()) return;
   const id = document.getElementById('p-id').value;
@@ -755,18 +443,15 @@ async function saveProduct(){
   const fileEl = document.getElementById('p-image-file');
   const urlEl = document.getElementById('p-image-url').value.trim();
 
-  // Perbaikan validasi: izinkan price = 0, tolak negatif / NaN
   if (!name || isNaN(price) || price < 0 || isNaN(stock) || stock < 0){ showToast('Lengkapi nama, harga (>=0), stok (>=0)', 'error'); return; }
 
   try {
     let imgUrl = urlEl || null;
     if (fileEl && fileEl.files && fileEl.files[0]) {
-      // Pastikan Cloudinary dikonfigurasi
       if (!CLOUDINARY_CLOUD_NAME || !CLOUDINARY_UPLOAD_PRESET){
         showToast('Upload file memerlukan konfigurasi Cloudinary. Set CLOUDINARY_CLOUD_NAME dan CLOUDINARY_UPLOAD_PRESET di script.js', 'error');
         return;
       }
-      // upload file ke Cloudinary
       imgUrl = await uploadToCloudinary(fileEl.files[0]);
     }
     if (!imgUrl) imgUrl = 'https://via.placeholder.com/600x400?text=No+Image';
@@ -788,80 +473,375 @@ async function saveProduct(){
 }
 
 // ---------------- user management (admin) ----------------
-function renderAdminUsers(){ if (!requireAdminAction()) return; const wrap = document.getElementById('admin-users'); if (!wrap) return; const users = getUsers(); wrap.innerHTML = ''; const table = document.createElement('div'); table.style.display = 'flex'; table.style.flexDirection = 'column'; table.style.gap = '8px'; Object.keys(users).sort().forEach(username=>{ const u = users[username]; const role = u.role || 'user'; const row = document.createElement('div'); row.style.display = 'flex'; row.style.alignItems = 'center'; row.style.justifyContent = 'space-between'; row.style.border = '1px solid #eef4f4'; row.style.padding = '8px'; row.style.borderRadius = '8px'; const left = document.createElement('div'); left.style.display='flex'; left.style.gap='12px'; left.style.alignItems='center'; const nameDiv = document.createElement('div'); nameDiv.style.fontWeight='700'; nameDiv.textContent = username; left.appendChild(nameDiv); const roleDiv = document.createElement('div'); roleDiv.style.color='#556'; roleDiv.style.fontSize='0.95em'; roleDiv.textContent = role; left.appendChild(roleDiv); row.appendChild(left); const right = document.createElement('div'); right.style.display='flex'; right.style.gap='8px'; right.style.alignItems='center';
+async function renderAdminUsers(){
+  if (!requireAdminAction()) return;
+  const wrap = document.getElementById('admin-users'); if (!wrap) return;
+  wrap.innerHTML = '';
 
-if (role !== 'admin'){
-  const makeAdminBtn = document.createElement('button');
-  makeAdminBtn.textContent = 'Make Admin';
-  makeAdminBtn.addEventListener('click', ()=> setUserRole(username,'admin'));
-  right.appendChild(makeAdminBtn);
-} else {
-  const setManagerBtn = document.createElement('button');
-  setManagerBtn.textContent = 'Set Manager';
-  setManagerBtn.addEventListener('click', ()=> setUserRole(username,'manager'));
-  right.appendChild(setManagerBtn);
+  let usersObj = {};
+  if (firebaseAvailable()){
+    usersObj = await fetchAllUsersFromFirestore();
+    // also merge local users for display if any exist
+    const local = getUsersLocal();
+    Object.entries(local).forEach(([k,v])=>{
+      if (!usersObj[k]) usersObj[k] = { role: v.role || 'user' };
+    });
+  } else {
+    usersObj = getUsersLocal();
+  }
+
+  const table = document.createElement('div'); table.style.display = 'flex'; table.style.flexDirection = 'column'; table.style.gap = '8px';
+  Object.keys(usersObj).sort().forEach(username=>{
+    const u = usersObj[username];
+    const role = u.role || (u.role===undefined && (u.role='user')) || 'user';
+    const row = document.createElement('div');
+    row.style.display = 'flex';
+    row.style.alignItems = 'center';
+    row.style.justifyContent = 'space-between';
+    row.style.border = '1px solid #eef4f4';
+    row.style.padding = '8px';
+    row.style.borderRadius = '8px';
+    const left = document.createElement('div');
+    left.style.display='flex';
+    left.style.gap='12px';
+    left.style.alignItems='center';
+    const nameDiv = document.createElement('div');
+    nameDiv.style.fontWeight='700';
+    nameDiv.textContent = username;
+    left.appendChild(nameDiv);
+    const roleDiv = document.createElement('div');
+    roleDiv.style.color='#556';
+    roleDiv.style.fontSize='0.95em';
+    roleDiv.textContent = role;
+    left.appendChild(roleDiv);
+    row.appendChild(left);
+    const right = document.createElement('div');
+    right.style.display='flex';
+    right.style.gap='8px';
+    right.style.alignItems='center';
+
+    if (role !== 'admin'){
+      const makeAdminBtn = document.createElement('button');
+      makeAdminBtn.textContent = 'Make Admin';
+      makeAdminBtn.addEventListener('click', ()=> setUserRole(username,'admin'));
+      right.appendChild(makeAdminBtn);
+    } else {
+      const setManagerBtn = document.createElement('button');
+      setManagerBtn.textContent = 'Set Manager';
+      setManagerBtn.addEventListener('click', ()=> setUserRole(username,'manager'));
+      right.appendChild(setManagerBtn);
+    }
+
+    if (role !== 'manager'){
+      const makeManagerBtn = document.createElement('button');
+      makeManagerBtn.textContent = 'Make Manager';
+      makeManagerBtn.addEventListener('click', ()=> setUserRole(username,'manager'));
+      right.appendChild(makeManagerBtn);
+    } else {
+      const demoteBtn = document.createElement('button');
+      demoteBtn.textContent = 'Demote to User';
+      demoteBtn.addEventListener('click', ()=> setUserRole(username,'user'));
+      right.appendChild(demoteBtn);
+    }
+
+    const delBtn = document.createElement('button');
+    delBtn.textContent = 'Hapus';
+    if (username === currentUser){ delBtn.disabled = true; delBtn.style.opacity = '0.6'; delBtn.style.cursor = 'not-allowed'; }
+    delBtn.addEventListener('click', ()=> deleteUserAdmin(username));
+    right.appendChild(delBtn);
+
+    row.appendChild(right);
+    table.appendChild(row);
+  });
+  wrap.appendChild(table);
 }
 
-if (role !== 'manager'){
-  const makeManagerBtn = document.createElement('button');
-  makeManagerBtn.textContent = 'Make Manager';
-  makeManagerBtn.addEventListener('click', ()=> setUserRole(username,'manager'));
-  right.appendChild(makeManagerBtn);
-} else {
-  const demoteBtn = document.createElement('button');
-  demoteBtn.textContent = 'Demote to User';
-  demoteBtn.addEventListener('click', ()=> setUserRole(username,'user'));
-  right.appendChild(demoteBtn);
+async function setUserRole(username, role){
+  if (!requireAdminAction()) return;
+  // Safety check: prevent removing last admin (local+firestore combined)
+  let allRoles = {};
+  if (firebaseAvailable()){
+    allRoles = await fetchAllUsersFromFirestore();
+    const local = getUsersLocal();
+    Object.entries(local).forEach(([k,v])=> { if (!allRoles[k]) allRoles[k] = { role: v.role || 'user' }; });
+  } else {
+    allRoles = getUsersLocal();
+  }
+  const adminCount = Object.values(allRoles).filter(u=>u.role==='admin').length;
+  if (allRoles[username] && allRoles[username].role === 'admin' && role !== 'admin' && adminCount <= 1){
+    showToast('Tidak bisa menurunkan: minimal satu admin harus tersedia', 'error'); return;
+  }
+
+  // update Firestore role if available
+  if (firebaseAvailable()){
+    const ok = await setRoleInFirestore(username, role);
+    if (!ok){ showToast('Gagal mengubah role di Firestore', 'error'); return; }
+  }
+  // also update local storage mapping for fallback display
+  const localUsers = getUsersLocal();
+  if (!localUsers[username]) localUsers[username] = { password: '', role };
+  else localUsers[username].role = role;
+  saveUsersLocal(localUsers);
+
+  // if we changed current user's role, refresh
+  if (username === currentUser) currentUserRole = role;
+  renderAdminUsers();
+  showToast(`${username} di-set role: ${role}`, 'success');
 }
 
-const delBtn = document.createElement('button');
-delBtn.textContent = 'Hapus';
-if (username === currentUser){ delBtn.disabled = true; delBtn.style.opacity = '0.6'; delBtn.style.cursor = 'not-allowed'; }
-delBtn.addEventListener('click', ()=> deleteUserAdmin(username));
-right.appendChild(delBtn);
+async function deleteUserAdmin(username){
+  if (!requireAdminAction()) return;
+  if (username === currentUser){ showToast('Tidak bisa menghapus akun yang sedang login', 'error'); return; }
+  if (!confirm(`Hapus user "${username}" beserta data (keranjang & pesanan)?`)) return;
 
-row.appendChild(right);
-table.appendChild(row);
-}); wrap.appendChild(table); }
-function setUserRole(username, role){ if (!requireAdminAction()) return; const users = getUsers(); if (!users[username]){ showToast('User tidak ditemukan', 'error'); return; } if (users[username].role === 'admin' && role !== 'admin'){ const adminCount = Object.values(users).filter(u=>u.role==='admin').length; if (adminCount <= 1){ showToast('Tidak bisa menurunkan: minimal satu admin harus tersedia', 'error'); return; } } users[username].role = role; saveUsers(users); renderAdminUsers(); showToast(`${username} di-set role: ${role}`, 'success'); }
-function deleteUserAdmin(username){ if (!requireAdminAction()) return; if (username === currentUser){ showToast('Tidak bisa menghapus akun yang sedang login', 'error'); return; } const users = getUsers(); if (!users[username]){ showToast('User tidak ditemukan', 'error'); return; } if (!confirm(`Hapus user "${username}" beserta data (keranjang & pesanan)?`)) return; delete users[username]; saveUsers(users); localStorage.removeItem(`cart_${username}`); localStorage.removeItem(`orders_${username}`); renderAdminUsers(); showToast(`User ${username} dihapus`, 'success'); }
+  // Delete role doc in Firestore (if available) and local users mapping.
+  if (firebaseAvailable()){
+    try {
+      await window.firebaseDb.collection('users').doc(username).delete();
+    } catch(e){
+      console.warn('Gagal hapus di Firestore (mungkin tidak ada):', e);
+    }
+    // NOTE: cannot delete other users from Firebase Auth from client-side (requires Admin SDK).
+    // So auth account may persist; for production, perform deletes via server-side admin functions.
+  }
+  const users = getUsersLocal();
+  delete users[username];
+  saveUsersLocal(users);
+  localStorage.removeItem(`cart_${username}`);
+  localStorage.removeItem(`orders_${username}`);
+  renderAdminUsers();
+  showToast(`User ${username} dihapus (role & local data). Untuk menghapus Auth user di Firebase, gunakan server-side admin SDK.`, 'success');
+}
 
 // ---------------- users export / import ----------------
-function exportUsers(){ if (!requireAdminAction()) return; const users = getUsers(); const blob = new Blob([JSON.stringify(users, null, 2)], { type: 'application/json' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `users_${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.json`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url); showToast('Export users: file diunduh', 'success'); }
-function importUsers(){ if (!requireAdminAction()) return; const fileInput = document.getElementById('import-users-file'); if (!fileInput || !fileInput.files || !fileInput.files[0]){ showToast('Pilih file JSON untuk import', 'error'); return; } const file = fileInput.files[0]; const mode = document.getElementById('import-mode') ? document.getElementById('import-mode').value : 'merge'; const fr = new FileReader(); fr.onload = function(e){ try { const parsed = JSON.parse(e.target.result); if (typeof parsed !== 'object'){ showToast('File tidak berisi object users valid', 'error'); return; } const existing = getUsers(); if (mode === 'replace'){ const adminCount = Object.values(parsed).filter(u => (u && (u.role==='admin' || (u.isAdmin || false) ))).length; if (adminCount === 0){ showToast('Import gagal: file tidak memiliki admin', 'error'); return; } const out = {}; Object.entries(parsed).forEach(([k,v])=>{ if (typeof v === 'string') out[k] = { password: v, role: (k==='admin' ? 'admin' : 'user') }; else if (v && typeof v === 'object'){ if (v.password && v.role) out[k] = { password: v.password, role: v.role }; else if (v.password && v.isAdmin !== undefined) out[k] = { password: v.password, role: v.isAdmin ? 'admin' : 'user' }; else if (v.password) out[k] = { password: v.password, role: 'user' }; else out[k] = { password: btoa(String(v)), role: 'user' }; } else out[k] = { password: btoa(String(v)), role: 'user' }; }); saveUsers(out); showToast('Import sukses (replace)', 'success'); } else { const merged = { ...existing }; Object.entries(parsed).forEach(([k,v])=>{ if (typeof v === 'string') merged[k] = { password: v, role: (k==='admin' ? 'admin' : 'user') }; else if (v && typeof v === 'object'){ if (v.password && v.role) merged[k] = { password: v.password, role: v.role }; else if (v.password && v.isAdmin !== undefined) merged[k] = { password: v.password, role: v.isAdmin ? 'admin' : 'user' }; else if (v.password) merged[k] = { password: v.password, role: 'user' }; else merged[k] = { password: btoa(String(v)), role: 'user' }; } else merged[k] = { password: btoa(String(v)), role: 'user' }; }); saveUsers(merged); showToast('Import sukses (merge)', 'success'); } renderAdminUsers(); } catch(err){ showToast('Error membaca file: format JSON tidak valid', 'error'); } }; fr.readAsText(file); }
+async function exportUsers(){
+  if (!requireAdminAction()) return;
+  let exportObj = {};
+  if (firebaseAvailable()){
+    exportObj = await fetchAllUsersFromFirestore();
+    // export only roles; passwords are managed by Firebase Auth and tidak diekspor
+  } else {
+    exportObj = getUsersLocal();
+  }
+  const blob = new Blob([JSON.stringify(exportObj, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `users_${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  showToast('Export users: file diunduh', 'success');
+}
 
-// ---------------- auth: login/register/logout ----------------
-// performLogin & performRegister sekarang mendukung async hash (SHA-256 base64) dan migrasi password legacy
-async function performLogin(){ 
+async function importUsers(){
+  if (!requireAdminAction()) return;
+  const fileInput = document.getElementById('import-users-file'); if (!fileInput || !fileInput.files || !fileInput.files[0]){ showToast('Pilih file JSON untuk import', 'error'); return; }
+  const file = fileInput.files[0];
+  const mode = document.getElementById('import-mode') ? document.getElementById('import-mode').value : 'merge';
+  const fr = new FileReader();
+  fr.onload = async function(e){
+    try {
+      const parsed = JSON.parse(e.target.result);
+      if (typeof parsed !== 'object'){ showToast('File tidak berisi object users valid', 'error'); return; }
+
+      if (mode === 'replace'){
+        // Replace roles in Firestore (if available) and local storage
+        if (firebaseAvailable()){
+          // basic check: require at least one admin in file
+          const adminCount = Object.values(parsed).filter(u => (u && (u.role==='admin'))).length;
+          if (adminCount === 0){ showToast('Import gagal: file tidak memiliki admin', 'error'); return; }
+          // write each doc (roles only)
+          const batch = window.firebaseDb.batch();
+          Object.entries(parsed).forEach(([k,v])=>{
+            const ref = window.firebaseDb.collection('users').doc(k);
+            batch.set(ref, { role: (v && v.role) || 'user' }, { merge: true });
+          });
+          await batch.commit();
+        }
+        // replace local mapping as fallback
+        const out = {};
+        Object.entries(parsed).forEach(([k,v])=>{
+          if (v && typeof v === 'object' && v.role) out[k] = { role: v.role, password: '' };
+          else out[k] = { role: 'user', password: '' };
+        });
+        saveUsersLocal(out);
+        showToast('Import sukses (replace)', 'success');
+      } else {
+        // merge
+        if (firebaseAvailable()){
+          const batch = window.firebaseDb.batch();
+          Object.entries(parsed).forEach(([k,v])=>{
+            const ref = window.firebaseDb.collection('users').doc(k);
+            batch.set(ref, { role: (v && v.role) || 'user' }, { merge: true });
+          });
+          await batch.commit();
+        }
+        // merge local
+        const merged = { ...getUsersLocal() };
+        Object.entries(parsed).forEach(([k,v])=>{
+          merged[k] = { role: (v && v.role) || 'user', password: merged[k] ? merged[k].password || '' : '' };
+        });
+        saveUsersLocal(merged);
+        showToast('Import sukses (merge)', 'success');
+      }
+      renderAdminUsers();
+    } catch(err){
+      console.error(err);
+      showToast('Error membaca file: format JSON tidak valid', 'error');
+    }
+  };
+  fr.readAsText(file);
+}
+
+// ---------------- auth: login/register/logout (Firebase-aware) ----------------
+async function performLogin(){
   const uEl = document.getElementById('login-username'); const pEl = document.getElementById('login-password'); const err = document.getElementById('login-error');
   if (!uEl || !pEl) return;
   const user = uEl.value.trim(), pass = pEl.value;
   if (!user || !pass){ if (err) err.textContent = 'Username / password tidak boleh kosong'; return; }
-  const users = getUsers();
-  const stored = users[user] && users[user].password;
-  const legacy = hash(pass);
-  let sha = null;
-  try { sha = await asyncHash(pass); } catch(e){ sha = legacy; } // fallback
 
-  if (stored && (stored === legacy || stored === sha)){
-    // migrate to sha if needed
-    if (stored !== sha){
-      users[user].password = sha;
-      saveUsers(users);
+  if (firebaseAvailable()){
+    try {
+      const email = usernameToEmail(user);
+      await window.firebaseAuth.signInWithEmailAndPassword(email, pass);
+      // onAuthStateChanged handler akan set currentUser & currentUserRole
+      showToast('Login sukses', 'success');
+      window.location.href='index.html';
+      return;
+    } catch(e){
+      console.warn('Firebase login failed', e);
+      if (err) err.textContent = 'Login gagal: username / password salah';
+      return;
     }
-    currentUser = user;
-    localStorage.setItem('currentUser', currentUser);
-    loadCartForUser();
-    showToast('Login sukses', 'success');
-    window.location.href='index.html';
-    return;
+  } else {
+    // Legacy local login (string match btoa or asyncHash)
+    const users = getUsersLocal();
+    const stored = users[user] && users[user].password;
+    const legacy = hash(pass);
+    let sha = null;
+    try { sha = await asyncHash(pass); } catch(e){ sha = legacy; }
+    if (stored && (stored === legacy || stored === sha)){
+      if (stored !== sha){
+        users[user].password = sha;
+        saveUsersLocal(users);
+      }
+      currentUser = user;
+      currentUserRole = users[user].role || 'user';
+      localStorage.setItem('currentUser', currentUser);
+      loadCartForUser();
+      showToast('Login sukses', 'success');
+      window.location.href='index.html';
+      return;
+    }
+    if (err) err.textContent = 'Login gagal: username / password salah';
   }
-  if (err) err.textContent = 'Login gagal: username / password salah';
 }
 
-async function performRegister(){ const uEl = document.getElementById('register-username'); const pEl = document.getElementById('register-password'); const p2El = document.getElementById('register-password2'); const err = document.getElementById('register-error'); if (!uEl || !pEl || !p2El) return; const user = uEl.value.trim(), pass = pEl.value, pass2 = p2El.value; if (!user){ if (err) err.textContent='Username tidak boleh kosong'; return; } if (user.length < 3){ if (err) err.textContent='Username minimal 3 karakter'; return; } if (!pass || pass.length < 6){ if (err) err.textContent='Password minimal 6 karakter'; return; } if (pass !== pass2){ if (err) err.textContent='Konfirmasi password tidak cocok'; return; } const users = getUsers(); if (users[user]){ if (err) err.textContent='Username sudah terdaftar'; return; } const hashed = await asyncHash(pass); users[user] = { password: hashed, role: 'user' }; saveUsers(users); currentUser = user; localStorage.setItem('currentUser', currentUser); loadCartForUser(); showToast('Registrasi sukses', 'success'); window.location.href='index.html'; }
+async function performRegister(){
+  const uEl = document.getElementById('register-username'); const pEl = document.getElementById('register-password'); const p2El = document.getElementById('register-password2'); const err = document.getElementById('register-error');
+  if (!uEl || !pEl || !p2El) return;
+  const user = uEl.value.trim(), pass = pEl.value, pass2 = p2El.value;
+  if (!user){ if (err) err.textContent='Username tidak boleh kosong'; return; }
+  if (user.length < 3){ if (err) err.textContent='Username minimal 3 karakter'; return; }
+  if (!pass || pass.length < 6){ if (err) err.textContent='Password minimal 6 karakter'; return; }
+  if (pass !== pass2){ if (err) err.textContent='Konfirmasi password tidak cocok'; return; }
+  const users = getUsersLocal();
+  if (users[user]){ if (err) err.textContent='Username sudah terdaftar'; return; }
 
-function logout(){ currentUser = null; localStorage.removeItem('currentUser'); cart = []; showToast('Logout', 'info'); window.location.href='login.html'; }
+  if (firebaseAvailable()){
+    try {
+      const email = usernameToEmail(user);
+      // create auth user
+      await window.firebaseAuth.createUserWithEmailAndPassword(email, pass);
+      // set role doc in firestore
+      await setRoleInFirestore(user, 'user');
+      // also store fallback locally (password empty)
+      users[user] = { password: '', role: 'user' };
+      saveUsersLocal(users);
+      currentUser = user;
+      currentUserRole = 'user';
+      localStorage.setItem('currentUser', currentUser);
+      loadCartForUser();
+      showToast('Registrasi sukses', 'success');
+      window.location.href='index.html';
+      return;
+    } catch(e){
+      console.error('Firebase register error', e);
+      if (err) err.textContent = 'Registrasi gagal: ' + (e.message || e);
+      return;
+    }
+  } else {
+    // legacy local registration
+    const hashed = await asyncHash(pass);
+    users[user] = { password: hashed, role: 'user' };
+    saveUsersLocal(users);
+    currentUser = user;
+    currentUserRole = 'user';
+    localStorage.setItem('currentUser', currentUser);
+    loadCartForUser();
+    showToast('Registrasi sukses', 'success');
+    window.location.href='index.html';
+  }
+}
+
+async function logout(){
+  if (firebaseAvailable()){
+    try {
+      await window.firebaseAuth.signOut();
+    } catch(e) {
+      console.warn('Firebase signOut error', e);
+    }
+  }
+  currentUser = null;
+  currentUserRole = null;
+  localStorage.removeItem('currentUser');
+  cart = [];
+  showToast('Logout', 'info');
+  window.location.href='login.html';
+}
+
+// ---------------- onAuthStateChanged (Firebase) ----------------
+if (typeof window !== 'undefined' && window.addEventListener){
+  // We'll attach a short delay to allow firebase-config.js to run
+  setTimeout(()=>{
+    if (firebaseAvailable()){
+      window.firebaseAuth.onAuthStateChanged(async (userObj)=>{
+        if (userObj && userObj.email){
+          // derive username from email "username@local.toko"
+          let uname = userObj.email.split('@')[0] || null;
+          currentUser = uname;
+          // fetch role from firestore or fallback to local
+          currentUserRole = await fetchRoleFromFirestore(uname) || getUserRoleFromLocal(uname) || 'user';
+          localStorage.setItem('currentUser', currentUser);
+          loadCartForUser();
+          updateHeaderUI();
+          handleRedirectAfterLogin();
+        } else {
+          currentUser = localStorage.getItem('currentUser') || null;
+          if (currentUser){
+            // try to refresh role from Firestore if available
+            if (firebaseAvailable()){
+              fetchRoleFromFirestore(currentUser).then(r=>{
+                if (r) currentUserRole = r;
+                else currentUserRole = getUserRoleFromLocal(currentUser) || 'user';
+                updateHeaderUI();
+              });
+            } else {
+              currentUserRole = getUserRoleFromLocal(currentUser) || 'user';
+              updateHeaderUI();
+            }
+            loadCartForUser();
+          } else {
+            currentUserRole = null;
+            updateHeaderUI();
+          }
+        }
+      });
+    }
+  }, 200);
+}
 
 // ---------------- redirect after login (intent) ----------------
 function handleRedirectAfterLogin(){ const token = localStorage.getItem('redirectAfterLogin'); if (!token) return; localStorage.removeItem('redirectAfterLogin'); if (token.startsWith('add:')){ const parts = token.split(':'); const id = parseInt(parts[1],10); const qty = parts[2] ? parseInt(parts[2],10) : 1; loadCartForUser(); const available = getAvailableStock(id); const inCart = (cart.find(i=>i.id===id)||{}).qty||0; const possible = Math.min(qty, Math.max(0, available - inCart)); if (possible <= 0) { showToast('Stok tidak mencukupi', 'error'); return; } const prod = findProduct(id); if (!prod) return; const found = cart.find(i=>i.id===id); if (found) found.qty += possible; else cart.push({...prod, qty:possible}); saveCartForUser(); updateCartUI(); showToast(`${prod.name} x${possible} ditambahkan ke keranjang`); } else if (token === 'showCart'){ const panel = document.getElementById('cart'); if (panel) panel.classList.remove('hidden'); updateCartUI(); } }
@@ -921,9 +901,18 @@ window.setUserRole = setUserRole;
 window.deleteUserAdmin = deleteUserAdmin;
 window.exportUsers = exportUsers;
 window.importUsers = importUsers;
-window.confirmPayment = confirmPayment;
-window.adminTogglePaid = adminTogglePaid;
-window.adminApproveProof = adminApproveProof;
-window.adminRejectProof = adminRejectProof;
-window.uploadPaymentProof = uploadPaymentProof;
-window.showPaymentPreview = showPaymentPreview;
+
+// Utility: migrate local users (roles) to Firestore (admin-only action)
+// NOTE: This migrates only roles and usernames (NOT passwords). Auth accounts remain local or must be created in Firebase separately.
+window.migrateLocalUsersToFirestore = async function(){
+  if (!requireAdminAction()) return;
+  if (!firebaseAvailable()){ showToast('Firebase tidak tersedia', 'error'); return; }
+  const local = getUsersLocal();
+  const batch = window.firebaseDb.batch();
+  Object.entries(local).forEach(([k,v])=> {
+    const ref = window.firebaseDb.collection('users').doc(k);
+    batch.set(ref, { role: (v && v.role) || 'user' }, { merge: true });
+  });
+  await batch.commit();
+  showToast('Migrasi roles ke Firestore selesai', 'success');
+};
