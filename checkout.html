@@ -32,7 +32,17 @@
         <option value="yes">Express - Rp15000</option>
       </select>
 
-      <div class="checkout-actions">
+      <h3>Metode Pembayaran</h3>
+      <select id="payment-method">
+        <option value="bank">Bank Transfer (Virtual Account)</option>
+        <option value="virtual">Virtual Account (simulasi)</option>
+        <option value="qris">QRIS</option>
+        <option value="cod">Cash on Delivery (Bayar saat terima)</option>
+      </select>
+
+      <div id="payment-instructions" style="margin-top:10px;color:#254; font-size:0.95em"></div>
+
+      <div class="checkout-actions" style="margin-top:12px">
         <button onclick="placeOrder()" class="btn-primary">Bayar & Pesan</button>
         <button onclick="window.location.href='index.html'" class="btn-muted">Batal</button>
       </div>
