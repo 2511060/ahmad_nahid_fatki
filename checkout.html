@@ -1,18 +1,18 @@
 <!DOCTYPE html>
-<html lang="id">
+<html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Checkout - Toko Online Sederhana</title>
+  <title>Checkout - Simple Online Store</title>
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <header>
-    <h1><a href="index.html" class="site-title">Toko Online Sederhana</a></h1>
+    <h1><a href="index.html" class="site-title">Simple Online Store</a></h1>
     <div class="header-actions">
       <span id="user-info"></span>
       <button id="login-btn">Login</button>
-      <a id="register-link" class="register-link" href="register.html">Daftar</a>
+      <a id="register-link" class="register-link" href="register.html">Register</a>
     </div>
   </header>
 
@@ -21,36 +21,36 @@
       <h2>Checkout</h2>
       <div id="checkout-items"></div>
 
-      <h3>Alamat Pengiriman</h3>
-      <input id="addr-name" placeholder="Nama penerima" />
-      <input id="addr-phone" placeholder="No. telepon" />
-      <textarea id="addr-address" placeholder="Alamat lengkap"></textarea>
+      <h3>Shipping Address</h3>
+      <input id="addr-name" placeholder="Recipient name" />
+      <input id="addr-phone" placeholder="Phone number" />
+      <textarea id="addr-address" placeholder="Full address"></textarea>
 
-      <h3>Metode Pengiriman</h3>
+      <h3>Shipping Method</h3>
       <select id="shipping-method">
-        <option value="reg">Reguler - Rp0 (simulasi)</option>
+        <option value="reg">Regular - Rp0 (simulation)</option>
         <option value="yes">Express - Rp15000</option>
       </select>
 
-      <h3>Metode Pembayaran</h3>
+      <h3>Payment Method</h3>
       <select id="payment-method">
         <option value="bank">Bank Transfer (Virtual Account)</option>
-        <option value="virtual">Virtual Account (simulasi)</option>
+        <option value="virtual">Virtual Account (simulation)</option>
         <option value="qris">QRIS</option>
-        <option value="cod">Cash on Delivery (Bayar saat terima)</option>
+        <option value="cod">Cash on Delivery (Pay on delivery)</option>
       </select>
 
       <div id="payment-instructions" style="margin-top:10px;color:#254; font-size:0.95em"></div>
 
       <div class="checkout-actions" style="margin-top:12px">
-        <button onclick="placeOrder()" class="btn-primary">Bayar & Pesan</button>
-        <button onclick="window.location.href='index.html'" class="btn-muted">Batal</button>
+        <button onclick="placeOrder()" class="btn-primary">Pay & Place Order</button>
+        <button onclick="window.location.href='index.html'" class="btn-muted">Cancel</button>
       </div>
     </div>
   </main>
 
   <footer>
-    &copy; 2026 Toko Online Sederhana
+    &copy; 2026 Simple Online Store
   </footer>
 
   <div id="toast" class="toast"></div>
