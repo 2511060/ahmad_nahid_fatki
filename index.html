@@ -1,26 +1,26 @@
 <!DOCTYPE html>
-<html lang="id">
+<html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Toko Online Sederhana</title>
+  <title>Simple Online Store</title>
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <header>
-    <h1><a href="index.html" class="site-title">Toko Online Sederhana</a></h1>
+    <h1><a href="index.html" class="site-title">Simple Online Store</a></h1>
     <div class="header-actions">
-      <input id="search-input" placeholder="Cari produk..." />
+      <input id="search-input" placeholder="Search products..." />
       <select id="filter-stock">
-        <option value="all">Semua stok</option>
-        <option value="in">Hanya tersedia</option>
-        <option value="out">Habis</option>
+        <option value="all">All stock</option>
+        <option value="in">In stock only</option>
+        <option value="out">Out of stock</option>
       </select>
       <button id="admin-link" onclick="goAdmin()">Admin</button>
       <span id="user-info"></span>
       <button id="login-btn">Login</button>
-      <a id="register-link" class="register-link" href="register.html">Daftar</a>
-      <button id="cart-button" onclick="toggleCart()">🛒 Keranjang (<span id="cart-count">0</span>)</button>
+      <a id="register-link" class="register-link" href="register.html">Register</a>
+      <button id="cart-button" onclick="toggleCart()">🛒 Cart (<span id="cart-count">0</span>)</button>
     </div>
   </header>
 
@@ -28,19 +28,19 @@
     <section id="product-container" class="product-grid"></section>
 
     <aside id="cart" class="cart-panel hidden">
-      <h2>Keranjang Belanja</h2>
+      <h2>Shopping Cart</h2>
       <ul id="cart-items"></ul>
       <div class="cart-total">Total: <span id="cart-total">Rp0</span></div>
       <div class="cart-actions">
-        <button onclick="emptyCart()" class="btn-danger">Kosongkan Keranjang</button>
+        <button onclick="emptyCart()" class="btn-danger">Empty Cart</button>
         <button onclick="proceedToCheckout()" class="btn-primary">Checkout</button>
-        <button onclick="toggleCart()" class="btn-muted">Tutup</button>
+        <button onclick="toggleCart()" class="btn-muted">Close</button>
       </div>
     </aside>
   </main>
 
   <footer>
-    &copy; 2026 Toko Online Sederhana
+    &copy; 2026 Simple Online Store
   </footer>
 
   <div id="toast" class="toast"></div>
